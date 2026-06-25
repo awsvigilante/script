@@ -1,6 +1,6 @@
 # script — shared OpenTofu/Terraform Taskfile
 
-One central `terraform.yml` that every live stack (`tf-networking-live`, `tf-EKS-live`, …)
+One central `task-terraform.yml` that every live stack (`tf-networking-live`, `tf-EKS-live`, …)
 includes, so the workflow logic lives in **one place**.
 
 ## What it gives you
@@ -25,7 +25,7 @@ Each live repo carries a tiny `Taskfile.yml`:
 version: "3"
 includes:
   tf:
-    taskfile: ../script/terraform.yml   # local sibling checkout
+    taskfile: ../script/task-terraform.yml   # local sibling checkout
     flatten: true                       # so you call `task dev:init`, not `task tf:dev:init`
 ```
 
@@ -37,7 +37,7 @@ auto-becomes `<that-repo's-folder>/terraform.tfstate`.
 ```yaml
 includes:
   tf:
-    taskfile: https://raw.githubusercontent.com/awsvigilante/script/v0.1.0/terraform.yml
+    taskfile: https://raw.githubusercontent.com/awsvigilante/script/v0.1.0/task-terraform.yml
     flatten: true
 ```
 Remote Taskfiles are still behind a go-task experiment — enable it once:
