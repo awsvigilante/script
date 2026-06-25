@@ -1,0 +1,153 @@
+version: "3"
+
+# OpenTofu workflow for this stack. ACCOUNT-PER-ENVIRONMENT: each env is its own
+# AWS account with its own state bucket. Partial S3 backend (see provider.tf):
+# region + encrypt + S3-native locking (use_lockfile) live there, so NO DynamoDB
+# lock table is needed — only bucket + key are passed at init.
+#
+# State layout — env lives in the BUCKET, stack name in the KEY (never double-encoded).
+# The stack name is taken from this repo's FOLDER, so this Taskfile is portable
+# (drop it into tf-EKS-live and the key auto-becomes tf-EKS-live/...):
+#   s3://terraform-state-<env>/<folder-name>/terraform.tfstate
+#
+# go-task namespaces use a colon, e.g. `task dev:plan` (a space means two tasks).
+#
+#   task local:init                       # floci/LocalStack sandbox (zero args)
+#   task local:plan / local:apply
+#
+#   task dev:init                          # ensures the bucket (creates if missing) + inits
+#   task dev:plan / dev:apply              # bucket defaults to terraform-state-dev
+#
+#   task prod:init / prod:plan / prod:apply
+#
+# init is self-bootstrapping & idempotent: it checks the bucket (head-bucket), creates
+# it with versioning + encryption + public-access-block only if missing, then inits.
+# The state OBJECT (key) is managed by tofu itself — created on first apply, reused after.
+#
+# S3 bucket names are GLOBALLY unique — override if these are taken (e.g. add an
+# org/account suffix):  task dev:init STATE_BUCKET=acme-terraform-state-dev
+
+vars:
+  TF: tofu
+  ENDPOINT: http://localhost:4566
+  STACK:
+    sh: basename "{{.USER_WORKING_DIR}}" # stack = the CALLER's folder (robust when this file is shared/remote)
+  STATE_KEY: "{{.STACK}}/terraform.tfstate" # env lives in the bucket; stack name in the key
+  PARALLELISM: "10" # concurrent resource operations (tofu default is 10)
+
+tasks:
+  default:
+    cmds: ["task --list"]
+    silent: true
+
+  fmt:
+    desc: Format the config
+    cmds: ["{{.TF}} fmt -recursive"]
+
+  # ---- local / floci — endpoint + dummy creds + sandbox role via env ----
+  local:init:
+    desc: Ensure the floci state bucket and init
+    env: &floci_env
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: "{{.ENDPOINT}}"
+      TF_VAR_assume_role_arn: "arn:aws:iam::000000000000:role/admin" # floci sandbox admin role
+    vars:
+      STATE_BUCKET: tf-networking-state
+    cmds:
+      - aws s3api head-bucket --bucket {{.STATE_BUCKET}} 2>/dev/null || aws s3 mb s3://{{.STATE_BUCKET}}
+      - >-
+        {{.TF}} init -reconfigure
+        -backend-config="bucket={{.STATE_BUCKET}}"
+        -backend-config="key=environments/local/terraform.tfstate"
+        -backend-config="use_path_style=true"
+
+  local:validate:
+    desc: Validate the config (floci context)
+    env: *floci_env
+    cmds: ["{{.TF}} validate"]
+
+  local:plan:
+    desc: Plan against floci
+    env: *floci_env
+    cmds: ["{{.TF}} plan -parallelism={{.PARALLELISM}} -var-file=local_config.tfvars"]
+
+  local:apply:
+    desc: Apply against floci (plans inline, prompts to confirm)
+    env: *floci_env
+    cmds: ["{{.TF}} apply -parallelism={{.PARALLELISM}} -var-file=local_config.tfvars"]
+
+  local:destroy:
+    desc: Destroy the floci stack
+    env: *floci_env
+    cmds: ["{{.TF}} destroy -parallelism={{.PARALLELISM}} -var-file=local_config.tfvars"]
+
+  # ---- dev — real AWS dev account (state bucket terraform-state-dev) ----
+  dev:init:
+    desc: Ensure the dev state bucket exists (create if missing), then init the backend
+    vars:
+      STATE_BUCKET: '{{.STATE_BUCKET | default "terraform-state-dev"}}'
+    cmds:
+      - task: _bootstrap-bucket
+        vars: { STATE_BUCKET: "{{.STATE_BUCKET}}" }
+      - >-
+        {{.TF}} init -reconfigure
+        -backend-config="bucket={{.STATE_BUCKET}}"
+        -backend-config="key={{.STATE_KEY}}"
+
+  dev:validate:
+    desc: Validate the config
+    cmds: ["{{.TF}} validate"]
+
+  dev:plan:
+    desc: Plan against the dev account (saves dev.tfplan)
+    cmds: ["{{.TF}} plan -parallelism={{.PARALLELISM}} -var-file=dev_config.tfvars -out=dev.tfplan"]
+
+  dev:apply:
+    desc: Apply the saved dev.tfplan
+    cmds: ["{{.TF}} apply -parallelism={{.PARALLELISM}} dev.tfplan"]
+
+  dev:destroy:
+    desc: Destroy the dev stack
+    cmds: ["{{.TF}} destroy -parallelism={{.PARALLELISM}} -var-file=dev_config.tfvars"]
+
+  # ---- prod — real AWS prod account (state bucket terraform-state-prod) ----
+  prod:init:
+    desc: Ensure the prod state bucket exists (create if missing), then init the backend
+    vars:
+      STATE_BUCKET: '{{.STATE_BUCKET | default "terraform-state-prod"}}'
+    cmds:
+      - task: _bootstrap-bucket
+        vars: { STATE_BUCKET: "{{.STATE_BUCKET}}" }
+      - >-
+        {{.TF}} init -reconfigure
+        -backend-config="bucket={{.STATE_BUCKET}}"
+        -backend-config="key={{.STATE_KEY}}"
+
+  prod:validate:
+    desc: Validate the config
+    cmds: ["{{.TF}} validate"]
+
+  prod:plan:
+    desc: Plan against the prod account (saves prod.tfplan)
+    cmds: ["{{.TF}} plan -parallelism={{.PARALLELISM}} -var-file=prod_config.tfvars -out=prod.tfplan"]
+
+  prod:apply:
+    desc: Apply the saved prod.tfplan
+    cmds: ["{{.TF}} apply -parallelism={{.PARALLELISM}} prod.tfplan"]
+
+  prod:destroy:
+    desc: Destroy the prod stack
+    cmds: ["{{.TF}} destroy -parallelism={{.PARALLELISM}} -var-file=prod_config.tfvars"]
+
+  # ---- internal: idempotent state-bucket bootstrap (run with the target account's creds) ----
+  _bootstrap-bucket:
+    internal: true
+    requires:
+      vars: [STATE_BUCKET]
+    cmds:
+      - aws s3api head-bucket --bucket {{.STATE_BUCKET}} 2>/dev/null && echo "bucket {{.STATE_BUCKET}} already exists" || aws s3api create-bucket --bucket {{.STATE_BUCKET}} --region us-east-1
+      - aws s3api put-bucket-versioning --bucket {{.STATE_BUCKET}} --versioning-configuration Status=Enabled
+      - aws s3api put-public-access-block --bucket {{.STATE_BUCKET}} --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+      - aws s3api put-bucket-encryption --bucket {{.STATE_BUCKET}} --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
