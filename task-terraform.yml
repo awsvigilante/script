@@ -34,6 +34,9 @@ vars:
     sh: basename "{{.USER_WORKING_DIR}}" # stack = the CALLER's folder (robust when this file is shared/remote)
   STATE_KEY: "{{.STACK}}/terraform.tfstate" # env lives in the bucket; stack name in the key
   PARALLELISM: "10" # concurrent resource operations (tofu default is 10)
+  # CONFIG_DIR (dir holding <env>_config.tfvars) is NOT defaulted here on purpose: a var
+  # defined in this file outranks one passed via `includes.<>.vars`, so it's defaulted
+  # inline at each use (`{{.CONFIG_DIR | default "."}}`). Override per-repo via the include.
 
 tasks:
   default:
@@ -71,17 +74,17 @@ tasks:
   local:plan:
     desc: Plan against floci
     env: *floci_env
-    cmds: ["{{.TF}} plan -parallelism={{.PARALLELISM}} -var-file=local_config.tfvars"]
+    cmds: ['{{.TF}} plan -parallelism={{.PARALLELISM}} -var-file={{.CONFIG_DIR | default "."}}/local_config.tfvars']
 
   local:apply:
     desc: Apply against floci (plans inline, prompts to confirm)
     env: *floci_env
-    cmds: ["{{.TF}} apply -parallelism={{.PARALLELISM}} -var-file=local_config.tfvars"]
+    cmds: ['{{.TF}} apply -parallelism={{.PARALLELISM}} -var-file={{.CONFIG_DIR | default "."}}/local_config.tfvars']
 
   local:destroy:
     desc: Destroy the floci stack
     env: *floci_env
-    cmds: ["{{.TF}} destroy -parallelism={{.PARALLELISM}} -var-file=local_config.tfvars"]
+    cmds: ['{{.TF}} destroy -parallelism={{.PARALLELISM}} -var-file={{.CONFIG_DIR | default "."}}/local_config.tfvars']
 
   # ---- dev — real AWS dev account (state bucket terraform-state-dev) ----
   dev:init:
@@ -102,7 +105,7 @@ tasks:
 
   dev:plan:
     desc: Plan against the dev account (saves dev.tfplan)
-    cmds: ["{{.TF}} plan -parallelism={{.PARALLELISM}} -var-file=dev_config.tfvars -out=dev.tfplan"]
+    cmds: ['{{.TF}} plan -parallelism={{.PARALLELISM}} -var-file={{.CONFIG_DIR | default "."}}/dev_config.tfvars -out=dev.tfplan']
 
   dev:apply:
     desc: Apply the saved dev.tfplan
@@ -110,7 +113,7 @@ tasks:
 
   dev:destroy:
     desc: Destroy the dev stack
-    cmds: ["{{.TF}} destroy -parallelism={{.PARALLELISM}} -var-file=dev_config.tfvars"]
+    cmds: ['{{.TF}} destroy -parallelism={{.PARALLELISM}} -var-file={{.CONFIG_DIR | default "."}}/dev_config.tfvars']
 
   # ---- prod — real AWS prod account (state bucket terraform-state-prod) ----
   prod:init:
@@ -131,7 +134,7 @@ tasks:
 
   prod:plan:
     desc: Plan against the prod account (saves prod.tfplan)
-    cmds: ["{{.TF}} plan -parallelism={{.PARALLELISM}} -var-file=prod_config.tfvars -out=prod.tfplan"]
+    cmds: ['{{.TF}} plan -parallelism={{.PARALLELISM}} -var-file={{.CONFIG_DIR | default "."}}/prod_config.tfvars -out=prod.tfplan']
 
   prod:apply:
     desc: Apply the saved prod.tfplan
@@ -139,7 +142,7 @@ tasks:
 
   prod:destroy:
     desc: Destroy the prod stack
-    cmds: ["{{.TF}} destroy -parallelism={{.PARALLELISM}} -var-file=prod_config.tfvars"]
+    cmds: ['{{.TF}} destroy -parallelism={{.PARALLELISM}} -var-file={{.CONFIG_DIR | default "."}}/prod_config.tfvars']
 
   # ---- internal: idempotent state-bucket bootstrap (run with the target account's creds) ----
   _bootstrap-bucket:
